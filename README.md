@@ -4,6 +4,8 @@ MINimal BATtery SysTray gauge
 
 An absolutely tiny battery gauge for your system tray on X11/Linux systems.
 
+Also now an equally tiny CPU usage graph! Uses ClearType antialiasing even!
+
 Also a very minimal example of how to create/manage a SysTray icon/state as
 there's a lack of modern tutorials for that available online.
 

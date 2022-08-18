@@ -1,12 +1,15 @@
+#include <time.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
-#include <unistd.h>
-#include <X11/Xutil.h>
 #include <string.h>
-#include <poll.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <unistd.h>
+#include <poll.h>
 #include <sys/syscall.h>
-#include "icons.h"
+#include <sys/sysinfo.h>
+#include <X11/Xutil.h>
 
 static void _message( const char *s, const int l ) {
 	syscall( SYS_write, STDOUT_FILENO, s, l );
@@ -22,6 +25,10 @@ __attribute__((noreturn)) static void _unrecoverable( const char *s, const int l
 
 static int tray_width;
 static int tray_height;
+static XImage *tray_image;
+static char *tray_pixels;
+static int tray_pixels_pages;
+XVisualInfo tray_visinfo;
 
 static Display *x11_display;
 static Window x11_window;
@@ -91,8 +98,11 @@ static void create_systray( void ) {
 	XSync( x11_display, True );
 
 	// Default size just to start
-	tray_width = ICON_WIDTH;
-	tray_height = ICON_HEIGHT;
+	tray_width = 1;
+	tray_height = 1;
+	tray_image = NULL;
+	tray_pixels = NULL;
+	tray_pixels_pages = 0;
 
 	// This is also known as a "drawable" in various function calls!
 	x11_window = XCreateWindow( x11_display, DefaultRootWindow( x11_display ), 0, 0,
@@ -104,82 +114,109 @@ static void create_systray( void ) {
 	XMapWindow( x11_display, x11_window );
 
 	XSync( x11_display, False );
+
+	memset( &tray_visinfo, 0, sizeof( tray_visinfo ) );
+	if ( XMatchVisualInfo( x11_display, XDefaultScreen( x11_display ), 24, TrueColor, &tray_visinfo ) == 0 ) {
+		unrecoverable( "Unable to find 32-bit visual format compatible with battery icons\n" );
+	}
+
+	tray_image = NULL;
+	tray_pixels = NULL;
 }
 
+static double old_total, old_idle;
+static double cpu_total, cpu_idle;
+static int nproc;
+
 static void update_icon( void ) {
-	int handle, charge, icon;
-	uint64_t v_cur, v_max;
-
-	if ( ( handle = syscall( SYS_open, "/sys/class/power_supply/BAT0/energy_full", O_RDONLY ) ) < 0 ) {
-		unrecoverable( "Unable to open battery charge maximum\n" );
-	}
-	v_max = 0;
-	for (;;) {
-		unsigned char c;
-		uint64_t s = syscall( SYS_read, handle, &c, 1 );
-		if ( s < 1 ) {
-			break;
+	if ( tray_pixels != NULL ) {
+		int needed = ( ( tray_width * tray_height * 4 ) + 4095 ) / 4096;
+		if ( needed > tray_pixels_pages ) {
+			tray_pixels = realloc( tray_pixels, needed * 4096 );
+			memset( tray_pixels + ( tray_pixels_pages * 4096 ), 0, ( needed - tray_pixels_pages ) * 4096 );
+			tray_pixels_pages = needed;
 		}
-		if ( c == 10 ) {
-			break;
-		}
-		if ( ( c >= '0' )
-		  && ( c <= '9' ) ) {
-			v_max = ( v_max * 10 ) + ( c - '0' );
-			continue;
-		}
-		unrecoverable( "Unable to read battery charge maximum\n" );
-	}
-	syscall( SYS_close, handle );
-
-	if ( ( handle = syscall( SYS_open, "/sys/class/power_supply/BAT0/energy_now", O_RDONLY ) ) < 0 ) {
-		unrecoverable( "Unable to open battery current charge\n" );
-	}
-	v_cur = 0;
-	for (;;) {
-		unsigned char c;
-		uint64_t s = syscall( SYS_read, handle, &c, 1 );
-		if ( s < 1 ) {
-			break;
-		}
-		if ( c == 10 ) {
-			break;
-		}
-		if ( ( c >= '0' )
-		  && ( c <= '9' ) ) {
-			v_cur = ( v_cur * 10 ) + ( c - '0' );
-			continue;
-		}
-		unrecoverable( "Unable to read battery current charge\n" );
-	}
-	syscall( SYS_close, handle );
-
-	charge = (int)( ( v_cur * 100 ) / v_max );
-
-	icon = -1;
-	for ( int i = 0; i < BREAKPOINTS_TOTAL; i++ ) {
-		if ( charge > breakpoints[ i ].threshold ) {
-			continue;
-		}
-		icon = i;
-		break;
-	}
-	if ( icon == -1 ) {
-		return;
 	}
 
-	XClearWindow( x11_display, x11_window );
+	if ( tray_pixels == NULL ) {
+		tray_pixels_pages = ( ( tray_width * tray_height * 4 ) + 4095 ) / 4096;
+		tray_pixels = calloc( tray_pixels_pages, 4096 );
+	}
+
+	if ( tray_image != NULL ) {
+		if ( ( tray_width > tray_image->width )
+		  || ( tray_height > tray_image->height ) ) {
+			if ( tray_width != tray_image->width ) {
+				message( "New XImage width detected, implement re-map\n" );
+			}
+			XFree( tray_image );
+			tray_image = NULL;
+		}
+	}
+
+	if ( tray_image == NULL ) {
+		tray_image = XCreateImage(
+			x11_display, tray_visinfo.visual, tray_visinfo.depth,
+			ZPixmap, 0, tray_pixels, tray_width, tray_height, 32, 0 );
+		if ( tray_image == 0 ) {
+			unrecoverable( "Unable to allocate XImage for CPU graph\n" );
+		}
+	}
+
+	FILE *f;
+
+	if ( ( f = fopen( "/proc/uptime", "rb" ) ) == NULL ) {
+		unrecoverable( "Unable to open /proc/uptime\n" );
+	}
+
+	old_total = cpu_total;
+	old_idle = cpu_idle;
+	if ( fscanf( f, "%lf %lf\n", &cpu_total, &cpu_idle ) != 2 ) {
+		unrecoverable( "Unable to fetch CPU stats\n" );
+	}
+
+	cpu_total = cpu_total * nproc * 100.0;
+	cpu_idle = cpu_idle * 100.0;
+
+	fclose( f );
+
+	int h = ( ( cpu_idle - old_idle ) / ( cpu_total - old_total ) ) * tray_image->height;
+	for ( int y = 0; y < tray_image->height; y++ ) {
+		char *p = tray_pixels + ( y * tray_image->bytes_per_line );
+		for ( int x = tray_image->width - 1; x > 0; x-- ) {
+			p[3] = 0;
+			p[2] = p[1];
+			p[1] = p[0];
+			p[0] = p[4];
+			p += 4;
+		}
+		if ( y < h ) {
+			p[0] =
+			p[1] =
+			p[2] =
+			p[3] = 0;
+		} else {
+			p[-4] += 57;
+			p[-3] += 28;
+			p[-2] += 0;
+			p[-1] += 0;
+			p[0] = 28;
+			p[1] = 57;
+			p[2] = 85;
+			p[3] = 0;
+		}
+	}
+
 	XPutImage( x11_display, x11_window,
 		DefaultGC( x11_display, DefaultScreen( x11_display ) ),
-		breakpoints[ icon ].image, 0, 0,
-		( tray_width - ICON_WIDTH ) / 2,
-		( tray_height - ICON_HEIGHT ) / 2,
-		ICON_WIDTH, ICON_HEIGHT );
+		tray_image, 0, 0, 0, 0, tray_width, tray_height );
 }
 
 int main( void ) {
 	XEvent ev;
 	uint64_t ret;
+
+	nproc = get_nprocs();
 
 	/* init */
 	if ( ( x11_display = XOpenDisplay( NULL ) ) == NULL ) {
@@ -187,20 +224,6 @@ int main( void ) {
 	}
 
 	create_systray( );
-
-	XVisualInfo visinfo = {0};
-	if ( XMatchVisualInfo( x11_display, XDefaultScreen( x11_display ), 24, TrueColor, &visinfo ) == 0 ) {
-		unrecoverable( "Unable to find 32-bit visual format compatible with battery icons\n" );
-	}
-
-	for ( int i = 0; i < BREAKPOINTS_TOTAL; i++ ) {
-		if ( ( breakpoints[i].image = XCreateImage(
-			x11_display, visinfo.visual, visinfo.depth,
-			ZPixmap, 0, (char *)unpacked_pixels + ( 24 * 19 * 4 * i ),
-			ICON_WIDTH, ICON_HEIGHT, 32, 0 ) ) == 0 ) {
-			unrecoverable( "Unable to allocate XImage for battery icon\n" );
-		}
-	}
 
 	for (;;) {
 		struct pollfd waiting[1];
@@ -270,7 +293,7 @@ int main( void ) {
 		waiting[0].events = POLLIN;
 		waiting[0].revents = 0;
 
-		if ( ( ret = syscall( SYS_poll, waiting, 1, 5000 ) ) < 0 ) {
+		if ( ( ret = syscall( SYS_poll, waiting, 1, 1000 ) ) < 0 ) {
 			if ( ret != -EINTR ) {
 				unrecoverable( "Error using poll() to avoid 100%% CPU usage\n" );
 			}
