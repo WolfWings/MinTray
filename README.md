@@ -1,6 +1,6 @@
 MINimal sysTRAY gauges
 
-==What is this?==
+# What is this?
 
 An absolutely tiny battery gauge for your system tray on X11/Linux systems.
 
@@ -9,7 +9,7 @@ Also now an equally tiny CPU usage graph! Uses ClearType antialiasing even!
 Also a very minimal example of how to create/manage a SysTray icon/state as
 there's a lack of modern tutorials for that available online.
 
-==Limitations==
+# Limitations
 
 This ONLY supports 32-bit visual depths. So it won't run at all on old GPUs
 or ancient hardware. It also won't render properly except on RGBX platforms
