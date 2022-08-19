@@ -1,8 +1,6 @@
 #include <stdint.h>
 #include <X11/Xutil.h>
-#include <string.h>
 #include <fcntl.h>
-#include <sys/syscall.h>
 #include "systray.h"
 #include "battery_icons.h"
 

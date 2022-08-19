@@ -1,10 +1,6 @@
-#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include <string.h>
-#include <fcntl.h>
-#include <sys/syscall.h>
 #include <sys/sysinfo.h>
 #include <X11/Xutil.h>
 #include "systray.h"
