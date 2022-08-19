@@ -1,4 +1,4 @@
-MINimal BATtery SysTray gauge
+MINimal sysTRAY gauges
 
 ==What is this?==
 
