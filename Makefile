@@ -6,5 +6,9 @@ BINARIES=minbat mincpu
 
 default: $(BINARIES)
 
+minbat: minbat.o systray.o
+
+mincpu: mincpu.o systray.o
+
 clean:
-	$(RM) $(BINARIES)
+	$(RM) $(BINARIES) *.o
